@@ -1,14 +1,8 @@
-# Google Gemini API 最新SDK (google-genai)
 google-genai
-
-# データ処理・解析
 pandas
-# Excel出力を行う場合（df.to_excel）に必要
+plotly
 openpyxl
-
-# 設定ファイル (secrets.toml) の読み込み
 toml
-
-# データ構造の定義・バリデーション (APIのレスポンススキーマ用)
 pydantic
 typing-extensions
+streamlit
