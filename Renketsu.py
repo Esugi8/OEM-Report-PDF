@@ -62,7 +62,7 @@ def process_pdf(uploaded_file):
     """
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
+        model="gemini-3.1-flash-lite-preview",
         contents=[gemini_file, prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
