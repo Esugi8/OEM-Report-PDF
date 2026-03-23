@@ -163,36 +163,99 @@ if analyze_btn and uploaded_files:
                     )
             except: continue
 
-        # --- 6. Charts ---
+# --- 6. Charts (ご提示の画像デザインを再現) ---
         if show_charts:
             st.divider()
+            
+            # グラフ描画用のデータ準備
+            # 10億円(Billion)単位に変換して画像に合わせる
+            chart_df = df.copy()
+            chart_df["Revenue_Bn"] = chart_df["Revenue"] / 10
+            chart_df["OpIncome_Bn"] = chart_df["OpIncome"] / 10
+            
             c1, c2 = st.columns(2)
+            
+            # --- 【左側：Revenue Chart】 ---
             with c1:
-                st.markdown("### 📊 Revenue Comparison (Ranked)")
-                fig = go.Figure()
-                for p in ["Last Year (H1)", "Current (H1)"]:
-                    p_df = df[df["Period"] == p]
-                    fig.add_trace(go.Bar(x=p_df["Company"], y=p_df["Revenue"], name=p))
+                fig_rev = go.Figure()
                 
-                # グラフのX軸に売上順のランキングを強制適用
-                fig.update_layout(
-                    barmode='group', 
-                    legend=dict(orientation="h", y=1.2),
-                    xaxis={'categoryorder':'array', 'categoryarray': ranking_revenue}
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                # 年度ごとのデータ
+                df_24 = chart_df[chart_df["Period"] == "Last Year (H1)"]
+                df_25 = chart_df[chart_df["Period"] == "Current (H1)"]
+                
+                # 前年比のテキスト作成
+                yoy_labels = []
+                for comp in ranking_revenue:
+                    try:
+                        v25 = df_25[df_25["Company"] == comp]["Revenue_Bn"].values[0]
+                        v24 = df_24[df_24["Company"] == comp]["Revenue_Bn"].values[0]
+                        diff = ((v25 / v24) - 1) * 100
+                        color = "red" if diff < 0 else "#444"
+                        yoy_labels.append(f"<span style='color:{color}'>{diff:+.1f}%</span><br>{v25:,.0f}")
+                    except: yoy_labels.append("")
 
+                # FY2024 (薄いオレンジ)
+                fig_rev.add_trace(go.Bar(
+                    name='FY2024', x=df_24["Company"], y=df_24["Revenue_Bn"],
+                    marker_color='#FFB399', offsetgroup=0
+                ))
+                # FY2025 (濃いオレンジ) + ラベル
+                fig_rev.add_trace(go.Bar(
+                    name='FY2025', x=df_25["Company"], y=df_25["Revenue_Bn"],
+                    marker_color='#FF4500', offsetgroup=1,
+                    text=yoy_labels, textposition='outside'
+                ))
+
+                fig_rev.update_layout(
+                    title={'text': "<b>Revenue</b>", 'x':0.5, 'xanchor': 'center', 'font':{'size':24, 'color':'#444'}},
+                    yaxis_title="billion JP yen",
+                    paper_bgcolor='#F2F2F2', plot_bgcolor='#F2F2F2',
+                    margin=dict(t=100, b=50, l=50, r=50),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis={'categoryorder':'array', 'categoryarray': ranking_revenue},
+                    yaxis=dict(gridcolor='white', range=[0, 30000])
+                )
+                st.plotly_chart(fig_rev, use_container_width=True)
+
+            # --- 【右側：Operating Income Chart】 ---
             with c2:
-                st.markdown("### 📉 Operating Income (Ranked by Revenue)")
                 fig_inc = go.Figure()
-                for p in ["Last Year (H1)", "Current (H1)"]:
-                    p_df = df[df["Period"] == p]
-                    fig_inc.add_trace(go.Bar(x=p_df["Company"], y=p_df["OpIncome"], name=p))
                 
-                # 利益グラフも比較しやすいようにX軸（会社順）は売上順に合わせる
+                # 前年比のテキスト作成
+                yoy_labels_inc = []
+                for comp in ranking_revenue:
+                    try:
+                        v25 = df_25[df_25["Company"] == comp]["OpIncome_Bn"].values[0]
+                        v24 = df_24[df_24["Company"] == comp]["OpIncome_Bn"].values[0]
+                        # 成長率（赤字転落などは "-" 表示）
+                        if v24 > 0:
+                            diff = ((v25 / v24) - 1) * 100
+                            label_txt = f"{diff:+.1f}%"
+                        else: label_txt = "-"
+                        
+                        color = "red" if v25 < v24 else "#444"
+                        yoy_labels_inc.append(f"<span style='color:{color}'>{label_txt}</span><br>{v25:,.0f}")
+                    except: yoy_labels_inc.append("")
+
+                # FY2024 (薄いパープル)
+                fig_inc.add_trace(go.Bar(
+                    name='FY2024', x=df_24["Company"], y=df_24["OpIncome_Bn"],
+                    marker_color='#A992E2', offsetgroup=0
+                ))
+                # FY2025 (濃いパープル)
+                fig_inc.add_trace(go.Bar(
+                    name='FY2025', x=df_25["Company"], y=df_25["OpIncome_Bn"],
+                    marker_color='#483D8B', offsetgroup=1,
+                    text=yoy_labels_inc, textposition='outside'
+                ))
+
                 fig_inc.update_layout(
-                    barmode='group', 
-                    legend=dict(orientation="h", y=1.2),
-                    xaxis={'categoryorder':'array', 'categoryarray': ranking_revenue}
+                    title={'text': "<b>Operating Income</b>", 'x':0.5, 'xanchor': 'center', 'font':{'size':24, 'color':'#444'}},
+                    yaxis_title="billion JP yen",
+                    paper_bgcolor='#F2F2F2', plot_bgcolor='#F2F2F2',
+                    margin=dict(t=100, b=50, l=50, r=50),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis={'categoryorder':'array', 'categoryarray': ranking_revenue},
+                    yaxis=dict(gridcolor='white', zerolinecolor='grey', zerolinewidth=1)
                 )
                 st.plotly_chart(fig_inc, use_container_width=True)
