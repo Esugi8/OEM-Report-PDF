@@ -20,7 +20,7 @@ class FinancialMetrics(BaseModel):
     revenue: float               
     operating_income: float      
     operating_margin_pct: float  
-    volume: float                # 連結販売台数に一本化
+    volume: float                
     fx_usd: float
     regional_sales: RegionalSales
 
@@ -36,9 +36,7 @@ client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 def standardize_currency(val):
     if val is None or val == 0: return 0
     abs_val = abs(val)
-    # ドット誤認補正 (20.056 -> 20056)
     if 1.0 < abs_val < 100.0: val = val * 1000
-    # 単位正規化（億円）
     if 0 < abs_val <= 1.0: val = val * 10000
     elif 1000000 < abs_val < 100000000: val = val / 100
     elif abs_val >= 100000000: val = val / 100000000
@@ -49,14 +47,14 @@ def standardize_volume(val):
     if abs(val) > 50000: val = val / 1000
     return val
 
-# --- 2. 解析ロジック (連結台数のみに指示を集中) ---
+# --- 2. 解析ロジック ---
 def process_pdf(uploaded_file):
     file_bytes = uploaded_file.read()
     gemini_file = client.files.upload(file=io.BytesIO(file_bytes), config={'mime_type': 'application/pdf'})
 
     prompt = """
     Extract financial results accurately from the tables.
-    【Separator Rule】 Comma (,) is a thousands separator, NOT a decimal point. 20,056 means 20056.
+    【Separator Rule】 Comma (,) is a thousands separator. 20,056 means 20056.
     【Volume Rule】 Extract ONLY "Consolidated Sales Volume" (連結販売台数) as 'volume'. 
     【Margin Rule】 Extract Operating Margin % (営業利益率) EXACTLY as written. (e.g., 0.5% -> 0.5)
     """
@@ -74,8 +72,9 @@ def process_pdf(uploaded_file):
     return response.parsed
 
 # --- 3. UI部 ---
-st.set_page_config(page_title="OEM Executive Dashboard", layout="wide")
+st.set_page_config(page_title="OEM Financial Ranking", layout="wide")
 st.title("🚗 Automotive OEM Consolidated Analysis")
+st.caption("Sorted by 2025 H1 Operating Income (Descending)")
 
 with st.sidebar:
     st.header("1. Input & Settings")
@@ -94,8 +93,8 @@ if analyze_btn and uploaded_files:
                 all_rows.append({
                     "Company": data.company_name,
                     "Period": "Last Year (H1)" if p_key == 'prior_h1_actual' else ("Current (H1)" if p_key == 'h1_actual' else "FY Forecast"),
+                    "OpIncome": standardize_currency(m.operating_income), # ソート用に先頭付近に配置
                     "Revenue": standardize_currency(m.revenue),
-                    "OpIncome": standardize_currency(m.operating_income),
                     "Margin": m.operating_margin_pct,
                     "Consolidated Volume": standardize_volume(m.volume),
                     "Japan": standardize_volume(reg.japan), 
@@ -107,58 +106,93 @@ if analyze_btn and uploaded_files:
 
     if all_rows:
         df = pd.DataFrame(all_rows)
-        
         # 数値型変換
-        for col in ["Revenue", "OpIncome", "Margin", "Consolidated Volume", "Japan", "NA", "Asia"]:
+        num_cols = ["Revenue", "OpIncome", "Margin", "Consolidated Volume", "Japan", "NA", "Asia"]
+        for col in num_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # --- 4. 【今回の重要修正】会社名列の「結合表示」ロジック ---
-        # 表示用のコピーを作成
-        display_df = df.copy()
+        # --- 【修正：収益（Revenue）順でランキングを確定】 ---
+        # 1. 今期の実績(Current H1)データだけを抽出し、売上高(Revenue)順に並べる
+        current_h1_data = df[df["Period"] == "Current (H1)"].sort_values("Revenue", ascending=False)
+        # 2. 売上順の会社名リストを作成
+        ranking_revenue = current_h1_data["Company"].tolist()
         
-        # 同じ会社名が続く場合、2行目以降を空白にする（視覚的な結合効果）
-        display_df['Company'] = display_df['Company'].where(~display_df['Company'].duplicated(), "")
+        # 3. 全体のデータフレームのCompany列をこの「売上順」に固定
+        df['Company'] = pd.Categorical(df['Company'], categories=ranking_revenue, ordered=True)
+        
+        # 4. 期間の順序も固定（前年 -> 当期 -> 見通し）
+        period_order = ["Last Year (H1)", "Current (H1)", "FY Forecast"]
+        df['Period'] = pd.Categorical(df['Period'], categories=period_order, ordered=True)
+        
+        # 5. 会社(売上順) × 期間 の順でソートを確定
+        df = df.sort_values(["Company", "Period"])
 
-        st.subheader("📊 Performance Comparison Table (Merged View)")
-        
-        # テーブル表示とスタイリング
+        # --- 4. 比較テーブル (Merged View) ---
+        display_df = df.copy()
+        # 連結表示のために重複する名前を消す（表示上のみ）
+        display_df['Company_Display'] = display_df['Company'].astype(str).where(~display_df['Company'].duplicated(), "")
+        cols_to_show = ["Company_Display", "Period", "Revenue", "OpIncome", "Margin", "Consolidated Volume", "Japan", "NA", "Asia"]
+        display_df = display_df[cols_to_show].rename(columns={"Company_Display": "Company"})
+
+        st.subheader("📊 Performance Comparison Table (Sorted by Revenue)")
         styled_df = display_df.style.format({
-            "Revenue": "{:,.0f}", 
-            "OpIncome": "{:,.0f}", 
-            "Margin": "{:.1f}%", 
-            "Consolidated Volume": "{:,.0f}", 
-            "Japan": "{:,.0f}", "NA": "{:,.0f}", "Asia": "{:,.0f}"
+            "Revenue": "{:,.0f}", "OpIncome": "{:,.0f}", "Margin": "{:.1f}%", 
+            "Consolidated Volume": "{:,.0f}", "Japan": "{:,.0f}", "NA": "{:,.0f}", "Asia": "{:,.0f}"
         }, na_rep="-")\
         .background_gradient(subset=["Margin"], cmap="RdYlGn", vmin=-5, vmax=10)\
         .bar(subset=["Revenue"], color='#d1e7dd', align='mid')\
         .map(lambda x: 'color: red;' if isinstance(x, (int, float)) and x < 0 else '', subset=["OpIncome"])
 
-        # インデックスを非表示にして、より「レポート」らしい見た目にする
-        st.dataframe(styled_df, use_container_width=True, height=400, hide_index=True)
+        st.dataframe(styled_df, use_container_width=True, height=450, hide_index=True)
 
-        # --- 5. KPI & Charts ---
-        # (以下、KPIとグラフの描画は、計算が必要なため元の `df` を使用して継続)
-        st.subheader("Executive KPI")
-        companies = df["Company"].unique()
-        k_cols = st.columns(len(companies))
-        for i, company in enumerate(companies):
+        # --- 5. KPI Metrics ---
+        st.subheader("Executive KPI (Sorted by Revenue)")
+        k_cols = st.columns(len(ranking_revenue))
+        for i, company in enumerate(ranking_revenue):
             try:
                 c_df = df[df["Company"] == company]
                 now = c_df[c_df["Period"] == "Current (H1)"].iloc[0]
                 prev = c_df[c_df["Period"] == "Last Year (H1)"].iloc[0]
-                rev_growth = ((now["Revenue"] / prev["Revenue"]) - 1) * 100
+                # 収益の前年比を計算
+                rev_growth = ((now["Revenue"] / prev["Revenue"]) - 1) * 100 if prev["Revenue"] != 0 else 0
                 with k_cols[i]:
-                    st.metric(label=f"{company}", value=f"¥{now['Revenue']:,.0f} Oku", delta=f"{rev_growth:+.1f}% YoY")
+                    st.metric(
+                        label=f"{company}", 
+                        value=f"¥{now['Revenue']:,.0f} Oku", 
+                        delta=f"{rev_growth:+.1f}% YoY Rev"
+                    )
             except: continue
 
+        # --- 6. Charts ---
         if show_charts:
             st.divider()
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown("### 📊 Revenue Comparison")
+                st.markdown("### 📊 Revenue Comparison (Ranked)")
                 fig = go.Figure()
                 for p in ["Last Year (H1)", "Current (H1)"]:
                     p_df = df[df["Period"] == p]
                     fig.add_trace(go.Bar(x=p_df["Company"], y=p_df["Revenue"], name=p))
-                fig.update_layout(barmode='group', legend=dict(orientation="h", y=1.2))
+                
+                # グラフのX軸に売上順のランキングを強制適用
+                fig.update_layout(
+                    barmode='group', 
+                    legend=dict(orientation="h", y=1.2),
+                    xaxis={'categoryorder':'array', 'categoryarray': ranking_revenue}
+                )
                 st.plotly_chart(fig, use_container_width=True)
+
+            with c2:
+                st.markdown("### 📉 Operating Income (Ranked by Revenue)")
+                fig_inc = go.Figure()
+                for p in ["Last Year (H1)", "Current (H1)"]:
+                    p_df = df[df["Period"] == p]
+                    fig_inc.add_trace(go.Bar(x=p_df["Company"], y=p_df["OpIncome"], name=p))
+                
+                # 利益グラフも比較しやすいようにX軸（会社順）は売上順に合わせる
+                fig_inc.update_layout(
+                    barmode='group', 
+                    legend=dict(orientation="h", y=1.2),
+                    xaxis={'categoryorder':'array', 'categoryarray': ranking_revenue}
+                )
+                st.plotly_chart(fig_inc, use_container_width=True)
