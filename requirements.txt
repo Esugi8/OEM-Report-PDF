@@ -6,3 +6,4 @@ toml
 pydantic
 typing-extensions
 streamlit
+matplotlib
