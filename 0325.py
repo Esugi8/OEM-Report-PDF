@@ -13,17 +13,17 @@ import time
 # 1. データ構造定義
 # =================================================================
 class RegionalSales(BaseModel):
-    japan: float = 0.0
-    north_america: float = 0.0
-    europe: float = 0.0
-    asia_incl_china: float = 0.0
-    other: float = 0.0
+    japan: Optional[float] = None
+    north_america: Optional[float] = None
+    europe: Optional[float] = None
+    asia_incl_china: Optional[float] = None
+    other: Optional[float] = None
 
 class FinancialMetrics(BaseModel):
-    revenue: float               # Target: Billion JPY (1,000,000,000 JPY)
-    operating_income: float      # Target: Billion JPY
-    operating_margin_pct: float  # %
-    volume: float                # Target: k units (1,000 units)
+    revenue: float               
+    operating_income: float      
+    operating_margin_pct: float  
+    volume: float                
     fx_usd: float = 0.0
     regional_sales: Optional[RegionalSales] = None
 
@@ -34,14 +34,11 @@ class ReportSchema(BaseModel):
     full_year_forecast: Optional[FinancialMetrics] = None
 
 # =================================================================
-# 2. ロジック：解析 (算術と単位特定にのみ従う)
+# 2. ロジック：解析 (全OEMの地域別データに対応)
 # =================================================================
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 def clean_numeric(val):
-    """
-    純粋な数値変換のみ。規模感による推測計算は行わない。
-    """
     if val is None: return np.nan
     try:
         if isinstance(val, str):
@@ -49,34 +46,33 @@ def clean_numeric(val):
         return float(val)
     except: return np.nan
 
+# (スキーマ定義や標準化関数はそのまま)
+
 def process_pdf(uploaded_file, status_container):
-    status_container.write(f"📂 Analyzing: {uploaded_file.name}")
+    status_container.write(f"📂 Analyzing Automobile Segments: {uploaded_file.name}")
     file_bytes = uploaded_file.read()
     gemini_file = client.files.upload(
         file=io.BytesIO(file_bytes), 
         config={'mime_type': 'application/pdf'}
     )
 
-    # 規模感を教えず、資料内の単位表記に基づく計算のみを指示
+    # ホンダのような多角経営企業向けに、セグメントを限定する指示を強化
     prompt = """
-    Extract financial results by strictly following the units stated in the document headers.
-    
-    【UNIT CONVERSION LOGIC】
-    Target Unit for Revenue/Income: "Billion JPY" (1,000,000,000 Yen).
-    Convert the raw values in the tables based on the header unit:
-    - If the header is "百万円" (Millions of Yen): Divide the value by 1,000.
-    - If the header is "億円" (100 Millions of Yen): Divide the value by 10.
-    - If the header is "兆円" (Trillions of Yen): Multiply the value by 1,000.
+    Extract financial and unit sales results accurately. 
 
-    Target Unit for Volume: "k units" (1,000 units).
-    - If source is "台" (Units): Divide by 1,000.
-    - If source is "万台" (10k units): Multiply by 10.
-    - If source is "千台" (k units): Keep as is.
+    【CRITICAL: BUSINESS SEGMENT RULE】
+    - For OEMs with multiple businesses (like Honda):
+        - Extract ONLY "Automobile Business" (四輪事業) figures for Sales Volume.
+        - COMPLETELY IGNORE "Motorcycle Business" (二輪事業) and "Power Products".
+        - The volume should be around 1,000 - 2,000k units for Honda Automobile, NOT 10,000k+.
 
-    【STRICT RULES】
-    - NEVER guess the scale. Use only the math based on the unit written in the PDF.
-    - Extract "Consolidated" (連結) figures only.
-    - If a specific Forecast table is found, extract it; otherwise return null for forecast fields.
+    【TARGET: REGIONAL SALES VOLUME】
+    - Look for the table labeled "四輪事業" (Automobile Business) or "Group Sales".
+    - Regional breakdown (Japan, NA, Europe, Asia) MUST be from the Automobile segment.
+
+    【CONVERSION】
+    - Revenue & Income: Billion JPY.
+    - Volume: k units (千台).
     """
 
     max_retries = 3
@@ -88,7 +84,7 @@ def process_pdf(uploaded_file, status_container):
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=ReportSchema,
-                    temperature=0.0, # 決定論的な結果を保証
+                    temperature=0.0,
                 ),
             )
             client.files.delete(name=gemini_file.name)
@@ -101,7 +97,7 @@ def process_pdf(uploaded_file, status_container):
             raise e
 
 # =================================================================
-# 3. UI部：洗練されたプロフェッショナルUI
+# 3. UI部
 # =================================================================
 st.set_page_config(page_title="Executive OEM Dashboard", layout="wide")
 
@@ -115,6 +111,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📊 Automotive OEM Global Performance")
+st.write("Comprehensive benchmarking of Revenue, Operating Income, and Regional Volume.")
 
 if 'master_df' not in st.session_state:
     st.session_state.master_df = None
@@ -134,10 +131,18 @@ if analyze_btn and uploaded_files:
         prog = st.progress(0)
         for i, f in enumerate(uploaded_files):
             try:
+                status.write(f"Processing: {f.name}")
                 data = process_pdf(f, status)
-                raw_name = data.company_name
-                name = "Nissan" if any(x in raw_name.lower() for x in ["nissan", "日産"]) else raw_name
                 
+                # 名称統一ロジック
+                raw_name = data.company_name
+                if any(x in raw_name.lower() for x in ["nissan", "日産"]): name = "Nissan"
+                elif any(x in raw_name.lower() for x in ["honda", "本田"]): name = "Honda"
+                elif any(x in raw_name.lower() for x in ["suzuki", "スズキ"]): name = "Suzuki"
+                elif any(x in raw_name.lower() for x in ["isuzu", "いすゞ"]): name = "Isuzu"
+                elif any(x in raw_name.lower() for x in ["mitsubishi", "三菱"]): name = "Mitsubishi"
+                else: name = raw_name
+
                 periods = [('prior_h1_actual', 'Prior Year (H1)'), ('h1_actual', 'Current Year (H1)'), ('full_year_forecast', 'Full Year Forecast')]
                 for key, label in periods:
                     m = getattr(data, key, None)
@@ -147,9 +152,11 @@ if analyze_btn and uploaded_files:
                             "Company": name, "Period": label,
                             "Revenue": clean_numeric(m.revenue),
                             "OpIncome": clean_numeric(m.operating_income),
-                            "Margin": clean_numeric(m.operating_margin_pct),
+                            "Margin": m.operating_margin_pct,
                             "Volume": clean_numeric(m.volume),
-                            "Japan": clean_numeric(reg.japan), "NA": clean_numeric(reg.north_america), "Asia": clean_numeric(reg.asia_incl_china)
+                            "Japan": clean_numeric(reg.japan), 
+                            "NA": clean_numeric(reg.north_america), 
+                            "Asia": clean_numeric(reg.asia_incl_china)
                         })
                     else:
                         all_rows.append({"Company": name, "Period": label, "Revenue": np.nan, "OpIncome": np.nan, "Margin": np.nan, "Volume": np.nan, "Japan": np.nan, "NA": np.nan, "Asia": np.nan})
@@ -172,7 +179,7 @@ if st.session_state.master_df is not None:
     if selected_oems:
         filtered_df = df[df["Company"].isin(selected_oems)].copy()
         
-        # 収益(Revenue)順にソート (Current H1基準)
+        # 収益順ソート
         curr_h1 = filtered_df[filtered_df["Period"] == "Current Year (H1)"].sort_values("Revenue", ascending=False)
         ranking = curr_h1["Company"].tolist()
         filtered_df['Company'] = pd.Categorical(filtered_df['Company'], categories=ranking, ordered=True)
@@ -183,9 +190,9 @@ if st.session_state.master_df is not None:
         display_df = filtered_df.copy()
         display_df['Company_Display'] = display_df['Company'].astype(str).where(~display_df['Company'].duplicated(), "")
         
+        cols = ["Company_Display", "Period", "Revenue", "OpIncome", "Margin", "Volume", "Japan", "NA", "Asia"]
         st.dataframe(
-            display_df[["Company_Display", "Period", "Revenue", "OpIncome", "Margin", "Volume", "Japan", "NA", "Asia"]]
-            .style.format({
+            display_df[cols].style.format({
                 "Revenue": "{:,.1f}", "OpIncome": "{:,.1f}", "Margin": "{:.1f}%",
                 "Volume": "{:,.0f}", "Japan": "{:,.0f}", "NA": "{:,.0f}", "Asia": "{:,.0f}"
             }, na_rep="-")
@@ -194,7 +201,7 @@ if st.session_state.master_df is not None:
             use_container_width=True, hide_index=True
         )
 
-        # 2. グラフ (指定カラー厳守)
+        # 2. グラフ (オリジナル配色)
         if show_charts:
             st.divider()
             c1, c2 = st.columns(2)
@@ -203,13 +210,13 @@ if st.session_state.master_df is not None:
 
             with c1: # Revenue (Orange)
                 fig_rev = go.Figure()
-                rev_text = [f"<span style='color:{'red' if (v2/v1-1)<0 else '#444' if v1>0 else '#444'}'>{(v2/v1-1)*100:+.1f}%</span><br><b>{v2:,.0f}</b>" if v1>0 else f"<b>{v2:,.0f}</b>" for v1, v2 in zip(df_24["Revenue"], df_25["Revenue"])]
+                rev_text = [f"<span style='color:{'red' if (v2/v1-1)<0 else '#444'}'>{(v2/v1-1)*100:+.1f}%</span><br><b>{v2:,.0f}</b>" if v1>0 else f"<b>{v2:,.0f}</b>" for v1, v2 in zip(df_24["Revenue"], df_25["Revenue"])]
                 fig_rev.add_trace(go.Bar(name='FY2024', x=df_24["Company"], y=df_24["Revenue"], marker_color='#FFB399'))
                 fig_rev.add_trace(go.Bar(name='FY2025', x=df_25["Company"], y=df_25["Revenue"], marker_color='#FF4500', text=rev_text, textposition='outside'))
                 fig_rev.update_layout(title_text="<b>Revenue</b> (Billion JPY)", title_x=0.5, paper_bgcolor='#F2F2F2', plot_bgcolor='#F2F2F2', yaxis=dict(gridcolor='white'))
                 st.plotly_chart(fig_rev, use_container_width=True)
 
-            with c2: # Operating Income (Purple)
+            with c2: # Income (Purple)
                 fig_inc = go.Figure()
                 inc_text = [f"<b>{v2:,.0f}</b>" for v2 in df_25["OpIncome"]]
                 fig_inc.add_trace(go.Bar(name='FY2024', x=df_24["Company"], y=df_24["OpIncome"], marker_color='#A992E2'))
